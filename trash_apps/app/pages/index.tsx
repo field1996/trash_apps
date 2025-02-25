@@ -4,8 +4,8 @@ import Link from 'next/link';
 export default function Home() {
   return (
     <div style={styles.container}>
-      <h1 style={styles.title}>Welcome to My Website</h1>
-      <p style={styles.description}>This is a simple link collection page.</p>
+      <h1 style={styles.title}>Webアプリ置き場</h1>
+      <p style={styles.description}>主に編集部向けに製作したwebアプリ置き場です</p>
       <nav style={styles.nav}>
         <ul style={styles.list}>
           <li style={styles.listItem}>
@@ -21,6 +21,11 @@ export default function Home() {
           <li style={styles.listItem}>
             <Link href="/contact" legacyBehavior>
               <a style={styles.link}>Contact</a>
+            </Link>
+          </li>
+          <li style={styles.listItem}>
+            <Link href="/generating_links" legacyBehavior>
+              <a style={styles.link}>Generating_links</a>
             </Link>
           </li>
         </ul>
