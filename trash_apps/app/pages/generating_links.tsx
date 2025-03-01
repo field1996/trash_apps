@@ -1,6 +1,5 @@
 /* eslint @typescript-eslint/no-explicit-any: 0 */
 import React, { useState } from 'react';
-import Link from 'next/link';
 
 const Generating_links: React.FC = () => {
   const [inputs, setInputs] = useState({
