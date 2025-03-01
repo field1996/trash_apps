@@ -28,6 +28,11 @@ export default function Home() {
               <a style={styles.link}>Generating_links</a>
             </Link>
           </li>
+          <li style={styles.listItem}>
+            <Link href="/webp-converter" legacyBehavior>
+              <a style={styles.link}>webp-converter</a>
+            </Link>
+          </li>
         </ul>
       </nav>
     </div>
