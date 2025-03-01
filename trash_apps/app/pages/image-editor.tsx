@@ -4,12 +4,18 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import dynamic from 'next/dynamic';
 import styles from '@/styles/ImageEditor.module.css';
-import { ReactZoomPanPinchRef, TransformState as ZoomPanPinchState } from 'react-zoom-pan-pinch';
+import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 type HeicBlobResult = Blob | Blob[];
-interface EditorTransformState {
+// カスタムインターフェースの定義
+interface TransformState {
     scale: number;
     positionX: number;
     positionY: number;
+}
+
+// onTransformed で受け取る ref の型定義
+interface TransformWrapperEvent {
+    state: TransformState;
 }
 
 const ImageEditor: React.FC = () => {
@@ -18,11 +24,12 @@ const ImageEditor: React.FC = () => {
     const [isTransparent, setIsTransparent] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const transformRef = useRef<ReactZoomPanPinchRef | null>(null);
-    const [transformState, setTransformState] = useState<EditorTransformState>({
+    const [transformState, setTransformState] = useState<TransformState>({
         scale: 1,
         positionX: 0,
         positionY: 0
     });
+
     const [showCenterGuide, setShowCenterGuide] = useState({
         vertical: false,
         horizontal: false
@@ -219,13 +226,13 @@ const ImageEditor: React.FC = () => {
     }, []);
 
     // 変換状態が変更されたときのハンドラー
-    const handleTransform = useCallback((ref: { state: ZoomPanPinchState }) => {
+    const handleTransform = useCallback((ref: TransformWrapperEvent) => {
         setTransformState({
             scale: ref.state.scale,
             positionX: ref.state.positionX,
             positionY: ref.state.positionY
         });
-    
+
         // 中心線のチェック処理
         const imageElement = document.querySelector(`.${styles.editorImage}`) as HTMLImageElement;
         if (imageElement) {
@@ -389,12 +396,10 @@ const ImageEditor: React.FC = () => {
                         onTransformed={handleTransform}
                         wheel={{
                             step: 0.02,
-                            smoothStep: 0.0003,  // より細かいステップを追加
-                            smoothTime: 50      // スムーズ時間を短く
+                            smoothStep: 0.0003  // より細かいステップを追加
                         }}
                         pinch={{
-                            step: 0.02,
-                            smoothStep: 0.002   // ピンチ操作も同様に
+                            step: 0.02
                         }}
                         doubleClick={{
                             step: 0.1,
