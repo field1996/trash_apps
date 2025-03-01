@@ -76,3 +76,17 @@
         padding: 1rem;
     }
 }
+/* descriptionのスタイルを更新 */
+.description {
+    text-align: center;
+    color: #666;
+    margin-bottom: 2rem;
+    padding: 1rem;
+    background: #f5f5f5;
+    border-radius: 8px;
+}
+
+.description p {
+    margin: 0.5rem 0;
+    font-size: 1rem;
+}

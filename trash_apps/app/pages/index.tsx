@@ -9,28 +9,23 @@ export default function Home() {
       <nav style={styles.nav}>
         <ul style={styles.list}>
           <li style={styles.listItem}>
-            <Link href="/about" legacyBehavior>
-              <a style={styles.link}>About</a>
-            </Link>
-          </li>
-          <li style={styles.listItem}>
-            <Link href="/services" legacyBehavior>
-              <a style={styles.link}>Services</a>
-            </Link>
-          </li>
-          <li style={styles.listItem}>
-            <Link href="/contact" legacyBehavior>
-              <a style={styles.link}>Contact</a>
-            </Link>
-          </li>
-          <li style={styles.listItem}>
             <Link href="/generating_links" legacyBehavior>
-              <a style={styles.link}>Generating_links</a>
+              <a style={styles.link}>アフィリエイトカードジェネレータ</a>
             </Link>
           </li>
           <li style={styles.listItem}>
             <Link href="/webp-converter" legacyBehavior>
-              <a style={styles.link}>webp-converter</a>
+              <a style={styles.link}>画像フォーマッタ</a>
+            </Link>
+          </li>
+          <li style={styles.listItem}>
+            <Link href="/image-editor" legacyBehavior>
+              <a style={styles.link}>リンク画像ジェネレータ</a>
+            </Link>
+          </li>
+          <li style={styles.listItem}>
+            <Link href="/about" legacyBehavior>
+              <a style={styles.link}>作成中</a>
             </Link>
           </li>
         </ul>
