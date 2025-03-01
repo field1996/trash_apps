@@ -23,7 +23,7 @@ const ImageResizer: React.FC = () => {
         };
 
         const img = await loadImage(file);
-        let { width, height } = img;
+        const { width, height } = img;
 
         // URLを解放
         URL.revokeObjectURL(img.src);
@@ -83,7 +83,7 @@ const ImageResizer: React.FC = () => {
 
         let resizedCount = 0;
         let convertedCount = 0;
-        let totalFiles = files.length;
+        const totalFiles = files.length;
 
         try {
             for (let i = 0; i < files.length; i++) {

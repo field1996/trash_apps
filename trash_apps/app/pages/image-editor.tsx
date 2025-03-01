@@ -4,14 +4,21 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import dynamic from 'next/dynamic';
 import styles from '@/styles/ImageEditor.module.css';
+import { ReactZoomPanPinchRef, TransformState as ZoomPanPinchState } from 'react-zoom-pan-pinch';
+type HeicBlobResult = Blob | Blob[];
+interface EditorTransformState {
+    scale: number;
+    positionX: number;
+    positionY: number;
+}
 
 const ImageEditor: React.FC = () => {
     const [imageUrl, setImageUrl] = useState<string>('');
     const [isDragging, setIsDragging] = useState(false);
     const [isTransparent, setIsTransparent] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
-    const transformRef = useRef<any>(null);
-    const [transformState, setTransformState] = useState({
+    const transformRef = useRef<ReactZoomPanPinchRef | null>(null);
+    const [transformState, setTransformState] = useState<EditorTransformState>({
         scale: 1,
         positionX: 0,
         positionY: 0
@@ -26,15 +33,15 @@ const ImageEditor: React.FC = () => {
     const processFile = async (file: File) => {
         try {
             let processedFile = file;
-
+    
             // HEICファイルの場合、PNGに変換
             if (file.type === 'image/heic' || file.name.toLowerCase().endsWith('.heic')) {
                 const heic2any = (await import('heic2any')).default;
                 const pngBlob = await heic2any({
                     blob: file,
                     toType: 'image/png',
-                }) as Blob;
-
+                }) as HeicBlobResult;
+    
                 if (pngBlob instanceof Blob) {
                     processedFile = new File([pngBlob], file.name.replace('.heic', '.png'), {
                         type: 'image/png'
@@ -47,12 +54,12 @@ const ImageEditor: React.FC = () => {
                     throw new Error('HEIC conversion failed');
                 }
             }
-
+    
             // 既存のURLを解放
             if (imageUrl) {
                 URL.revokeObjectURL(imageUrl);
             }
-
+    
             const url = URL.createObjectURL(processedFile);
             setImageUrl(url);
         } catch (error) {
@@ -83,11 +90,10 @@ const ImageEditor: React.FC = () => {
     // キーボード操作のハンドラー
     useEffect(() => {
         let moveInterval: NodeJS.Timeout | null = null;
-        const moveDistance = 1; // 1pxずつ移動
-        const initialDelay = 400; // 最初の遅延（ミリ秒）
-        const repeatInterval = 16; // 繰り返しの間隔（約60FPS）
+        const moveDistance = 1;
+        const initialDelay = 400;
+        const repeatInterval = 16;
     
-        // 移動処理を関数として定義
         const moveImage = (direction: 'up' | 'down' | 'left' | 'right') => {
             if (!transformRef.current) return;
     
@@ -109,7 +115,6 @@ const ImageEditor: React.FC = () => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (!imageUrl || !transformRef.current) return;
     
-            // 他のキーが押されている場合は処理をスキップ
             if (e.ctrlKey || e.altKey || e.metaKey) return;
     
             let direction: 'up' | 'down' | 'left' | 'right' | null = null;
@@ -133,10 +138,8 @@ const ImageEditor: React.FC = () => {
     
             e.preventDefault();
     
-            // 即座に1回目の移動を実行
             moveImage(direction);
     
-            // 長押し時の連続移動を設定
             if (!moveInterval) {
                 moveInterval = setTimeout(() => {
                     moveInterval = setInterval(() => {
@@ -146,7 +149,8 @@ const ImageEditor: React.FC = () => {
             }
         };
     
-        const handleKeyUp = (e: KeyboardEvent) => {
+        // 未使用パラメータを削除
+        const handleKeyUp = () => {
             if (moveInterval) {
                 clearInterval(moveInterval);
                 moveInterval = null;
@@ -215,13 +219,13 @@ const ImageEditor: React.FC = () => {
     }, []);
 
     // 変換状態が変更されたときのハンドラー
-    const handleTransform = useCallback((ref: any) => {
+    const handleTransform = useCallback((ref: { state: ZoomPanPinchState }) => {
         setTransformState({
             scale: ref.state.scale,
             positionX: ref.state.positionX,
             positionY: ref.state.positionY
         });
-
+    
         // 中心線のチェック処理
         const imageElement = document.querySelector(`.${styles.editorImage}`) as HTMLImageElement;
         if (imageElement) {
