@@ -24,8 +24,8 @@ export default function Home() {
             </Link>
           </li>
           <li style={styles.listItem}>
-            <Link href="/about" legacyBehavior>
-              <a style={styles.link}>作成中</a>
+            <Link href="/thumbnail-generator" legacyBehavior>
+              <a style={styles.link}>SNS用サムネ画像ジェネレータ</a>
             </Link>
           </li>
         </ul>
