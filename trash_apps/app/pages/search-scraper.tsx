@@ -42,9 +42,9 @@ export default function SearchScraper() {
   const [blInput, setBlInput] = useState('');
 
   const [tab, setTab] = useState<'results' | 'history'>('results');
-  const [history, setHistory] = useState
-    { query: string; url: string; title: string; fetchedAt: string }[]
-  >([]);
+  const [history, setHistory] = useState<{
+    query: string; url: string; title: string; fetchedAt: string
+  }[]>([]);
 
   const fetchBlacklist = useCallback(async () => {
     const res = await fetch(`${API}?action=blacklist`);
