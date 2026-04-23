@@ -71,62 +71,6 @@ async function readJson<T>(path: string): Promise<{ data: T; sha: string | undef
   return { data: JSON.parse(decoded), sha: file.sha };
 }
 
-// ---- Serper API ----
-// num=10固定 + page でページング
-// maxResults=0 は無制限（結果が尽きるまで取得）
-
-async function serperSearch(
-  query: string,
-  dateRestrict: DateRestrict,
-  maxResults: number
-): Promise<SearchResult[]> {
-  const results: SearchResult[] = [];
-  const unlimited = maxResults === 0;
-  const PER_PAGE = 10;
-  let page = 1;
-
-  while (true) {
-    const res = await fetch("https://google.serper.dev/search", {
-      method: "POST",
-      headers: {
-        "X-API-KEY": SERPER_API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        q: query,
-        tbs: TBS_MAP[dateRestrict],
-        num: PER_PAGE,
-        page,
-        gl: "jp",
-        hl: "ja",
-      }),
-    });
-
-    if (!res.ok) throw new Error(`Serper API error: ${res.status}`);
-    const data = await res.json();
-    const items: { link: string; title: string; snippet: string }[] = data.organic ?? [];
-
-    for (const item of items) {
-      results.push({
-        url: item.link,
-        title: item.title,
-        description: item.snippet?.replace(/\n/g, " ") ?? "",
-        fetchedAt: new Date().toISOString(),
-      });
-      if (!unlimited && results.length >= maxResults) break;
-    }
-
-    // 終了条件
-    if (items.length < PER_PAGE) break;           // 結果が尽きた
-    if (!unlimited && results.length >= maxResults) break; // 指定件数に達した
-
-    page++;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-
-  return results;
-}
-
 function isBlacklisted(url: string, blacklist: string[]): boolean {
   return blacklist.some((prefix) => {
     const n = prefix.startsWith("http") ? prefix : `https://${prefix}`;
@@ -171,7 +115,6 @@ export const handler: Handler = async (event: HandlerEvent) => {
       const body = JSON.parse(event.body ?? "{}");
       const { data, sha } = await readJson<string[]>(BLACKLIST_PATH);
       const list = data as string[];
-
       if (body.prefixes && Array.isArray(body.prefixes)) {
         const incoming: string[] = body.prefixes.map((p: string) => p.trim()).filter(Boolean);
         const merged = Array.from(new Set([...list, ...incoming]));
@@ -187,20 +130,37 @@ export const handler: Handler = async (event: HandlerEvent) => {
       return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
     }
 
+    // POST: 1ページ分の検索 + 履歴保存
     if (method === "POST") {
       const body = JSON.parse(event.body ?? "{}");
       const query: string = body.query?.trim();
       const dateRestrict: DateRestrict = body.dateRestrict ?? "w1";
-      // maxResults=0 を無制限として扱う（上限なし）
-      const maxResults = Number(body.maxResults) === 0 ? 0 : Number(body.maxResults) || 10;
+      const page: number = Number(body.page) || 1;
       const deduplication: boolean = body.deduplication !== false;
 
       if (!query) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "query required" }) };
 
-      const [{ data: historyRaw, sha: historySha }, { data: blacklistRaw }, rawResults] = await Promise.all([
+      // Serper に1ページ分だけ問い合わせ
+      const serperRes = await fetch("https://google.serper.dev/search", {
+        method: "POST",
+        headers: { "X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ q: query, tbs: TBS_MAP[dateRestrict], num: 10, page, gl: "jp", hl: "ja" }),
+      });
+      if (!serperRes.ok) throw new Error(`Serper API error: ${serperRes.status}`);
+      const serperData = await serperRes.json();
+      const rawItems: { link: string; title: string; snippet: string }[] = serperData.organic ?? [];
+
+      const rawResults: SearchResult[] = rawItems.map((item) => ({
+        url: item.link,
+        title: item.title,
+        description: item.snippet?.replace(/\n/g, " ") ?? "",
+        fetchedAt: new Date().toISOString(),
+      }));
+
+      // 履歴・BLを読み込み（並列）
+      const [{ data: historyRaw, sha: historySha }, { data: blacklistRaw }] = await Promise.all([
         readJson<HistoryEntry[]>(HISTORY_PATH),
         readJson<string[]>(BLACKLIST_PATH),
-        serperSearch(query, dateRestrict, maxResults),
       ]);
 
       const history = historyRaw as HistoryEntry[];
@@ -214,13 +174,14 @@ export const handler: Handler = async (event: HandlerEvent) => {
                : "new",
       }));
 
+      // 新規のみ履歴に保存
       const newItems = annotated.filter((r) => r.status === "new");
       if (newItems.length > 0) {
         await ghPut(
           HISTORY_PATH,
           JSON.stringify([...history, ...newItems.map((r) => ({ ...r, query }))]),
           historySha,
-          `data: 検索履歴を追加 - "${query}" (${newItems.length}件)`
+          `data: 検索履歴を追加 - "${query}" p${page} (${newItems.length}件)`
         );
       }
 
@@ -228,12 +189,8 @@ export const handler: Handler = async (event: HandlerEvent) => {
         statusCode: 200, headers: CORS,
         body: JSON.stringify({
           results: annotated,
-          stats: {
-            total: annotated.length,
-            new: newItems.length,
-            duplicate: annotated.filter((r) => r.status === "duplicate").length,
-            blacklisted: annotated.filter((r) => r.status === "blacklisted").length,
-          },
+          // 結果が10件未満なら次ページなし
+          hasMore: rawItems.length === 10,
         }),
       };
     }

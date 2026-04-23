@@ -51,9 +51,16 @@ export default function SearchScraper() {
 
   const [results, setResults] = useState<AnnotatedResult[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<Date | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // モーダル状態
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalPage, setModalPage] = useState(0);
+  const [modalTotal, setModalTotal] = useState(0);
+  const [modalDone, setModalDone] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const abortRef = useRef(false);
 
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [blInput, setBlInput] = useState('');
@@ -70,29 +77,81 @@ export default function SearchScraper() {
 
   useEffect(() => { fetchBlacklist(); }, [fetchBlacklist]);
 
+  // ---- 検索実行（ページループ） ----
   async function handleSearch() {
     if (!query.trim()) return;
-    setLoading(true);
+
+    // モーダルを開いてリセット
+    abortRef.current = false;
+    setModalOpen(true);
+    setModalPage(0);
+    setModalTotal(0);
+    setModalDone(false);
+    setModalError(null);
     setError(null);
+
+    const accumulated: AnnotatedResult[] = [];
+    const unlimited = maxResults === 0;
+    // 1ページ10件なので必要ページ数を計算（無制限は上限なし）
+    const maxPages = unlimited ? Infinity : Math.ceil(maxResults / 10);
+
     try {
-      const res = await fetch(API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, dateRestrict, maxResults, deduplication }),
+      for (let page = 1; page <= maxPages; page++) {
+        if (abortRef.current) break;
+
+        setModalPage(page);
+
+        const res = await fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, dateRestrict, page, deduplication }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? '検索に失敗しました');
+
+        const pageResults: AnnotatedResult[] = data.results ?? [];
+        accumulated.push(...pageResults);
+        setModalTotal(accumulated.length);
+
+        // 次ページなし（結果が10件未満）
+        if (!data.hasMore) break;
+        // 指定件数に達した
+        if (!unlimited && accumulated.length >= maxResults) break;
+
+        // ページ間インターバル
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      // 件数上限でトリム
+      const final = unlimited ? accumulated : accumulated.slice(0, maxResults);
+
+      setResults(final);
+      setStats({
+        total: final.length,
+        new: final.filter((r) => r.status === 'new').length,
+        duplicate: final.filter((r) => r.status === 'duplicate').length,
+        blacklisted: final.filter((r) => r.status === 'blacklisted').length,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? '検索に失敗しました');
-      setResults(data.results);
-      setStats(data.stats);
       setLastRun(new Date());
       setTab('results');
+      setModalDone(true);
+
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'エラーが発生しました');
-    } finally {
-      setLoading(false);
+      const msg = e instanceof Error ? e.message : 'エラーが発生しました';
+      setModalError(msg);
+      setError(msg);
     }
   }
 
+  function handleAbort() {
+    abortRef.current = true;
+  }
+
+  function handleModalClose() {
+    setModalOpen(false);
+  }
+
+  // ---- ブラックリスト ----
   async function handleAddBl() {
     if (!blInput.trim()) return;
     await fetch(API, {
@@ -138,6 +197,7 @@ export default function SearchScraper() {
     reader.readAsText(file, 'UTF-8');
   }
 
+  // ---- 履歴 ----
   async function fetchHistory() {
     const res = await fetch(`${API}?action=history`);
     const data = await res.json();
@@ -150,6 +210,7 @@ export default function SearchScraper() {
     setHistory([]);
   }
 
+  // ---- CSV ----
   function exportCsv() {
     const header = 'status,url,title,description,fetchedAt';
     const rows = results
@@ -194,8 +255,8 @@ export default function SearchScraper() {
             placeholder="例: Next.js パフォーマンス 最適化"
             style={{ ...s.input, flex: 1 }}
           />
-          <button onClick={handleSearch} disabled={loading} style={s.btnPrimary}>
-            {loading ? '取得中...' : '検索実行'}
+          <button onClick={handleSearch} disabled={modalOpen && !modalDone} style={s.btnPrimary}>
+            検索実行
           </button>
         </div>
         <div style={s.grid3}>
@@ -221,7 +282,7 @@ export default function SearchScraper() {
         </div>
       </div>
 
-      {/* ブラックリスト設定 */}
+      {/* ブラックリスト */}
       <div style={{ ...s.card, marginTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
           <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>ブラックリスト（URLプレフィックス）</p>
@@ -253,7 +314,7 @@ export default function SearchScraper() {
       </div>
 
       {/* エラー */}
-      {error && <div style={s.errorBox}>{error}</div>}
+      {error && !modalOpen && <div style={s.errorBox}>{error}</div>}
 
       {/* ステータスバー */}
       {stats && (
@@ -307,7 +368,6 @@ export default function SearchScraper() {
           </div>
 
           <div style={{ ...s.card, borderTop: 'none', borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
-            {/* 検索結果タブ（BL除外を含まない） */}
             {tab === 'results' && (
               searchResults.length === 0
                 ? <p style={{ fontSize: 13, color: '#666' }}>結果なし</p>
@@ -315,9 +375,7 @@ export default function SearchScraper() {
                   <div key={r.url} style={{ ...s.resultRow, opacity: r.status === 'duplicate' ? 0.45 : 1 }}>
                     <div style={{ ...s.row, alignItems: 'center', marginBottom: 4 }}>
                       <span style={s.resultUrl}>{r.url}</span>
-                      <Badge type={r.status}>
-                        {r.status === 'new' ? '新規' : '重複'}
-                      </Badge>
+                      <Badge type={r.status}>{r.status === 'new' ? '新規' : '重複'}</Badge>
                     </div>
                     <div style={s.resultTitle}>
                       {r.status === 'new'
@@ -329,7 +387,6 @@ export default function SearchScraper() {
                 ))
             )}
 
-            {/* ブラックリスト除外タブ */}
             {tab === 'blacklisted' && (
               blacklistedResults.length === 0
                 ? <p style={{ fontSize: 13, color: '#666' }}>除外なし</p>
@@ -345,7 +402,6 @@ export default function SearchScraper() {
                 ))
             )}
 
-            {/* 履歴タブ */}
             {tab === 'history' && (
               history.length === 0
                 ? <p style={{ fontSize: 13, color: '#666' }}>履歴なし</p>
@@ -365,6 +421,51 @@ export default function SearchScraper() {
             )}
           </div>
         </>
+      )}
+
+      {/* 取得進捗モーダル */}
+      {modalOpen && (
+        <div style={s.modalOverlay}>
+          <div style={s.modalBox}>
+            <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>
+              {modalDone ? '取得完了' : modalError ? 'エラーが発生しました' : '取得中...'}
+            </p>
+
+            {!modalError && (
+              <>
+                <div style={s.progressBar}>
+                  <div style={{
+                    ...s.progressFill,
+                    width: modalDone ? '100%' : `${Math.min((modalPage / (maxResults === 0 ? modalPage + 1 : Math.ceil(maxResults / 10))) * 100, 95)}%`,
+                    background: modalDone ? '#1e7e34' : '#1558d6',
+                  }} />
+                </div>
+                <p style={{ fontSize: 13, color: '#555', marginTop: 10, textAlign: 'center' }}>
+                  {modalDone
+                    ? `${modalTotal}件取得完了`
+                    : `${modalPage}ページ目を取得中 ... ${modalTotal}件取得済み`}
+                </p>
+              </>
+            )}
+
+            {modalError && (
+              <p style={{ fontSize: 13, color: '#c00', marginBottom: 12 }}>{modalError}</p>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 20 }}>
+              {!modalDone && !modalError && (
+                <button onClick={handleAbort} style={{ ...s.btn, color: '#c00', borderColor: '#fca5a5' }}>
+                  中断
+                </button>
+              )}
+              {(modalDone || modalError) && (
+                <button onClick={handleModalClose} style={s.btnPrimary}>
+                  閉じる
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -389,24 +490,28 @@ function Badge({ type, children }: { type: string; children: React.ReactNode }) 
 }
 
 const s = {
-  page:        { maxWidth: 800, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'system-ui, sans-serif' } as React.CSSProperties,
-  h1:          { fontSize: 20, fontWeight: 600, marginBottom: '1.5rem' } as React.CSSProperties,
-  card:        { background: '#fff', border: '0.5px solid #e0e0e0', borderRadius: 12, padding: '1rem 1.25rem' } as React.CSSProperties,
-  label:       { fontSize: 12, color: '#666', marginBottom: 6 } as React.CSSProperties,
-  row:         { display: 'flex', gap: 8 } as React.CSSProperties,
-  grid3:       { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 } as React.CSSProperties,
-  input:       { width: '100%', height: 36, padding: '0 10px', fontSize: 14, border: '0.5px solid #ccc', borderRadius: 8, boxSizing: 'border-box' } as React.CSSProperties,
-  btn:         { height: 36, padding: '0 14px', fontSize: 13, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
-  btnPrimary:  { height: 36, padding: '0 14px', fontSize: 13, border: 'none', borderRadius: 8, background: '#000', color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
-  btnSm:       { height: 28, padding: '0 10px', fontSize: 12, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
-  tag:         { display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f5f5f5', border: '0.5px solid #ddd', borderRadius: 20, padding: '3px 10px', fontSize: 12 } as React.CSSProperties,
-  tagDel:      { background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 12, color: '#999', lineHeight: 1 } as React.CSSProperties,
-  statusBar:   { marginTop: 12, background: '#f5f5f5', borderRadius: 8, padding: '0.5rem 0.75rem', fontSize: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' } as React.CSSProperties,
-  errorBox:    { marginTop: 12, padding: '0.75rem 1rem', background: '#fef2f2', border: '0.5px solid #fca5a5', borderRadius: 8, fontSize: 13, color: '#991b1b' } as React.CSSProperties,
-  tabBar:      { display: 'flex', gap: 0, marginTop: 16, borderBottom: '0.5px solid #e0e0e0', alignItems: 'center' } as React.CSSProperties,
-  tabBtn:      { background: 'none', border: 'none', padding: '0.5rem 1rem', fontSize: 13, cursor: 'pointer' } as React.CSSProperties,
-  resultRow:   { padding: '0.75rem 0', borderBottom: '0.5px solid #e0e0e0' } as React.CSSProperties,
-  resultUrl:   { flex: 1, fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as React.CSSProperties,
-  resultTitle: { fontSize: 14, fontWeight: 500, margin: '3px 0' } as React.CSSProperties,
-  resultDesc:  { fontSize: 12, color: '#555', lineHeight: 1.5 } as React.CSSProperties,
+  page:         { maxWidth: 800, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'system-ui, sans-serif' } as React.CSSProperties,
+  h1:           { fontSize: 20, fontWeight: 600, marginBottom: '1.5rem' } as React.CSSProperties,
+  card:         { background: '#fff', border: '0.5px solid #e0e0e0', borderRadius: 12, padding: '1rem 1.25rem' } as React.CSSProperties,
+  label:        { fontSize: 12, color: '#666', marginBottom: 6 } as React.CSSProperties,
+  row:          { display: 'flex', gap: 8 } as React.CSSProperties,
+  grid3:        { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 } as React.CSSProperties,
+  input:        { width: '100%', height: 36, padding: '0 10px', fontSize: 14, border: '0.5px solid #ccc', borderRadius: 8, boxSizing: 'border-box' } as React.CSSProperties,
+  btn:          { height: 36, padding: '0 14px', fontSize: 13, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
+  btnPrimary:   { height: 36, padding: '0 14px', fontSize: 13, border: 'none', borderRadius: 8, background: '#000', color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
+  btnSm:        { height: 28, padding: '0 10px', fontSize: 12, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
+  tag:          { display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f5f5f5', border: '0.5px solid #ddd', borderRadius: 20, padding: '3px 10px', fontSize: 12 } as React.CSSProperties,
+  tagDel:       { background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 12, color: '#999', lineHeight: 1 } as React.CSSProperties,
+  statusBar:    { marginTop: 12, background: '#f5f5f5', borderRadius: 8, padding: '0.5rem 0.75rem', fontSize: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' } as React.CSSProperties,
+  errorBox:     { marginTop: 12, padding: '0.75rem 1rem', background: '#fef2f2', border: '0.5px solid #fca5a5', borderRadius: 8, fontSize: 13, color: '#991b1b' } as React.CSSProperties,
+  tabBar:       { display: 'flex', gap: 0, marginTop: 16, borderBottom: '0.5px solid #e0e0e0', alignItems: 'center' } as React.CSSProperties,
+  tabBtn:       { background: 'none', border: 'none', padding: '0.5rem 1rem', fontSize: 13, cursor: 'pointer' } as React.CSSProperties,
+  resultRow:    { padding: '0.75rem 0', borderBottom: '0.5px solid #e0e0e0' } as React.CSSProperties,
+  resultUrl:    { flex: 1, fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as React.CSSProperties,
+  resultTitle:  { fontSize: 14, fontWeight: 500, margin: '3px 0' } as React.CSSProperties,
+  resultDesc:   { fontSize: 12, color: '#555', lineHeight: 1.5 } as React.CSSProperties,
+  modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 } as React.CSSProperties,
+  modalBox:     { background: '#fff', borderRadius: 12, padding: '2rem', width: 320, boxShadow: '0 8px 32px rgba(0,0,0,0.15)' } as React.CSSProperties,
+  progressBar:  { height: 6, background: '#e0e0e0', borderRadius: 3, overflow: 'hidden' } as React.CSSProperties,
+  progressFill: { height: '100%', borderRadius: 3, transition: 'width 0.4s ease, background 0.4s ease' } as React.CSSProperties,
 };
