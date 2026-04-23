@@ -28,6 +28,11 @@ export default function Home() {
               <a style={styles.link}>SNS用サムネ画像ジェネレータ</a>
             </Link>
           </li>
+          <li style={styles.listItem}>
+            <Link href="/search-scraper" legacyBehavior>
+              <a style={styles.link}>検索結果スクレイパー</a>
+            </Link>
+          </li>
         </ul>
       </nav>
     </div>
