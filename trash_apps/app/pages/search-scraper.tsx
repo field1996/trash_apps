@@ -1,3 +1,4 @@
+/* eslint-disable */
 import React, { useState, useEffect, useCallback } from 'react';
 
 type DateRestrict = 'w1' | 'm1' | 'y1';
