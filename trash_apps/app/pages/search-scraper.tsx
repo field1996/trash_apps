@@ -113,7 +113,7 @@ export default function SearchScraper() {
     // 検索するクエリ一覧：ドメインあり → ドメインなし
     const searchTargets: { searchQuery: string; label: string }[] = [
       ...domains.map((d) => ({
-        searchQuery: `intext:${query} site:${normalizeDomain(d)}`,
+        searchQuery: `${query} site:${normalizeDomain(d)}`,
         label: `site:${normalizeDomain(d)}`,
       })),
       { searchQuery: query, label: 'キーワードのみ' },
