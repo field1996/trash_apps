@@ -113,7 +113,7 @@ export default function SearchScraper() {
     // 検索するクエリ一覧：ドメインあり → ドメインなし
     const searchTargets: { searchQuery: string; label: string }[] = [
       ...domains.map((d) => ({
-        searchQuery: `${query} site:${normalizeDomain(d)}`,
+        searchQuery: `intext:${query} site:${normalizeDomain(d)}`,
         label: `site:${normalizeDomain(d)}`,
       })),
       { searchQuery: query, label: 'キーワードのみ' },
@@ -588,7 +588,7 @@ const s = {
   tabBtn:       { background: 'none', border: 'none', padding: '0.5rem 1rem', fontSize: 13, cursor: 'pointer' } as React.CSSProperties,
   resultRow:    { padding: '0.75rem 0', borderBottom: '0.5px solid #e0e0e0' } as React.CSSProperties,
   resultUrl:    { flex: 1, fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as React.CSSProperties,
-  resultTitle:g  { fontSize: 14, fontWeight: 500, margin: '3px 0' } as React.CSSProperties,
+  resultTitle:  { fontSize: 14, fontWeight: 500, margin: '3px 0' } as React.CSSProperties,
   resultDesc:   { fontSize: 12, color: '#555', lineHeight: 1.5 } as React.CSSProperties,
   modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 } as React.CSSProperties,
   modalBox:     { background: '#fff', borderRadius: 12, padding: '2rem', width: 360, boxShadow: '0 8px 32px rgba(0,0,0,0.15)' } as React.CSSProperties,
