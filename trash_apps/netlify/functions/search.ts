@@ -80,11 +80,12 @@ async function serperSearch(
   maxResults: number
 ): Promise<SearchResult[]> {
   const results: SearchResult[] = [];
-  const perPage = 10;
   const unlimited = maxResults === 0;
-  const pages = unlimited ? 5 : Math.min(Math.ceil(maxResults / perPage), 5);
+  // num=100 で1リクエストあたりの取得件数を最大化
+  const num = unlimited ? 100 : Math.min(maxResults, 100);
+  const maxPages = unlimited ? 10 : Math.ceil(maxResults / num);
 
-  for (let page = 0; page < pages; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const res = await fetch("https://google.serper.dev/search", {
       method: "POST",
       headers: {
@@ -94,8 +95,8 @@ async function serperSearch(
       body: JSON.stringify({
         q: query,
         tbs: TBS_MAP[dateRestrict],
-        num: perPage,
-        page: page + 1,
+        num,
+        page,
         gl: "jp",
         hl: "ja",
       }),
@@ -114,10 +115,14 @@ async function serperSearch(
       });
       if (!unlimited && results.length >= maxResults) break;
     }
-    if (items.length < perPage) break;
+
+    // 結果が0件 or 指定件数に達したら終了
+    if (items.length === 0) break;
     if (!unlimited && results.length >= maxResults) break;
+
     await new Promise((r) => setTimeout(r, 200));
   }
+
   return results;
 }
 
