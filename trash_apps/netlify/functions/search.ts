@@ -190,7 +190,7 @@ export const handler: Handler = async (event: HandlerEvent) => {
         body: JSON.stringify({
           results: annotated,
           // 結果が10件未満なら次ページなし
-          hasMore: rawItems.length === 10,
+          hasMore: rawItems.length > 0,
         }),
       };
     }
