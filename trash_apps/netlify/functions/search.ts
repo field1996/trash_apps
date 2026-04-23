@@ -1,7 +1,6 @@
 import type { Handler, HandlerEvent } from "@netlify/functions";
 
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY!;
-const GOOGLE_CSE_ID  = process.env.GOOGLE_CSE_ID!;
+const SERPER_API_KEY = process.env.SERPER_API_KEY!;
 const GITHUB_PAT     = process.env.GITHUB_PAT!;
 const GITHUB_OWNER   = process.env.GITHUB_OWNER!;
 const GITHUB_REPO    = process.env.GITHUB_REPO!;
@@ -16,6 +15,12 @@ const CORS = {
 };
 
 type DateRestrict = "w1" | "m1" | "y1";
+
+const TBS_MAP: Record<DateRestrict, string> = {
+  w1: "qdr:w",
+  m1: "qdr:m",
+  y1: "qdr:y",
+};
 
 interface SearchResult {
   url: string; title: string; description: string; fetchedAt: string;
@@ -47,7 +52,11 @@ async function ghPut(path: string, content: string, sha: string | undefined, mes
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`,
     {
       method: "PUT",
-      headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${GITHUB_PAT}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
     }
   );
@@ -61,32 +70,48 @@ async function readJson<T>(path: string): Promise<{ data: T; sha: string | undef
   return { data: JSON.parse(decoded), sha: file.sha };
 }
 
-// ---- Google CSE ----
+// ---- Serper API ----
 
-async function googleSearch(query: string, dateRestrict: DateRestrict, maxResults: number): Promise<SearchResult[]> {
+async function serperSearch(
+  query: string,
+  dateRestrict: DateRestrict,
+  maxResults: number
+): Promise<SearchResult[]> {
   const results: SearchResult[] = [];
-  const pages = Math.min(Math.ceil(maxResults / 10), 5);
+  const perPage = 10;
+  const pages = Math.min(Math.ceil(maxResults / perPage), 5);
 
   for (let page = 0; page < pages; page++) {
-    const url = new URL("https://www.googleapis.com/customsearch/v1");
-    url.searchParams.set("key", GOOGLE_API_KEY);
-    url.searchParams.set("cx", GOOGLE_CSE_ID);
-    url.searchParams.set("q", query);
-    url.searchParams.set("dateRestrict", dateRestrict);
-    url.searchParams.set("num", "10");
-    url.searchParams.set("start", String(page * 10 + 1));
-    url.searchParams.set("fields", "items(link,title,snippet)");
+    const res = await fetch("https://google.serper.dev/search", {
+      method: "POST",
+      headers: {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        q: query,
+        tbs: TBS_MAP[dateRestrict],
+        num: perPage,
+        page: page + 1,
+        gl: "jp",
+        hl: "ja",
+      }),
+    });
 
-    const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`CSE error: ${res.status}`);
+    if (!res.ok) throw new Error(`Serper API error: ${res.status}`);
     const data = await res.json();
-    const items: { link: string; title: string; snippet: string }[] = data.items ?? [];
+    const items: { link: string; title: string; snippet: string }[] = data.organic ?? [];
 
     for (const item of items) {
-      results.push({ url: item.link, title: item.title, description: item.snippet?.replace(/\n/g, " ") ?? "", fetchedAt: new Date().toISOString() });
+      results.push({
+        url: item.link,
+        title: item.title,
+        description: item.snippet?.replace(/\n/g, " ") ?? "",
+        fetchedAt: new Date().toISOString(),
+      });
       if (results.length >= maxResults) break;
     }
-    if (items.length < 10 || results.length >= maxResults) break;
+    if (items.length < perPage || results.length >= maxResults) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   return results;
@@ -157,7 +182,7 @@ export const handler: Handler = async (event: HandlerEvent) => {
       const [{ data: historyRaw, sha: historySha }, { data: blacklistRaw }, rawResults] = await Promise.all([
         readJson<HistoryEntry[]>(HISTORY_PATH),
         readJson<string[]>(BLACKLIST_PATH),
-        googleSearch(query, dateRestrict, maxResults),
+        serperSearch(query, dateRestrict, maxResults),
       ]);
 
       const history = historyRaw as HistoryEntry[];
