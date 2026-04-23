@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 type DateRestrict = 'd3' | 'w1' | 'w2' | 'm1';
+type TabType = 'results' | 'blacklisted' | 'history';
 
 interface AnnotatedResult {
   url: string;
@@ -58,7 +59,7 @@ export default function SearchScraper() {
   const [blInput, setBlInput] = useState('');
   const blFileRef = useRef<HTMLInputElement>(null);
 
-  const [tab, setTab] = useState<'results' | 'history'>('results');
+  const [tab, setTab] = useState<TabType>('results');
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const fetchBlacklist = useCallback(async () => {
@@ -84,6 +85,7 @@ export default function SearchScraper() {
       setResults(data.results);
       setStats(data.stats);
       setLastRun(new Date());
+      setTab('results');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'エラーが発生しました');
     } finally {
@@ -107,7 +109,6 @@ export default function SearchScraper() {
     fetchBlacklist();
   }
 
-  // ブラックリスト CSVエクスポート
   function exportBlCsv() {
     const csv = 'prefix\n' + blacklist.map((p) => `"${p}"`).join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -117,7 +118,6 @@ export default function SearchScraper() {
     a.click();
   }
 
-  // ブラックリスト CSVインポート
   function handleBlFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -125,7 +125,6 @@ export default function SearchScraper() {
     reader.onload = async (ev) => {
       const text = ev.target?.result as string;
       const lines = text.split(/\r?\n/).map((l) => l.trim().replace(/^"|"$/g, '').trim());
-      // ヘッダー行（prefix）と空行を除去
       const prefixes = lines.filter((l) => l && l !== 'prefix');
       if (prefixes.length === 0) return;
       await fetch(API, {
@@ -153,9 +152,9 @@ export default function SearchScraper() {
 
   function exportCsv() {
     const header = 'status,url,title,description,fetchedAt';
-    const rows = results.map(
-      (r) => `"${r.status}","${r.url}","${r.title.replace(/"/g, '""')}","${r.description.replace(/"/g, '""')}","${r.fetchedAt}"`
-    );
+    const rows = results
+      .filter((r) => r.status !== 'blacklisted')
+      .map((r) => `"${r.status}","${r.url}","${r.title.replace(/"/g, '""')}","${r.description.replace(/"/g, '""')}","${r.fetchedAt}"`);
     const blob = new Blob(['\uFEFF' + [header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -170,7 +169,15 @@ export default function SearchScraper() {
     return `${Math.floor(diff / 60)}時間前`;
   }
 
+  const searchResults = results.filter((r) => r.status !== 'blacklisted');
+  const blacklistedResults = results.filter((r) => r.status === 'blacklisted');
   const newResults = results.filter((r) => r.status === 'new');
+
+  const TABS: { key: TabType; label: string; count?: number }[] = [
+    { key: 'results', label: '検索結果', count: searchResults.length },
+    { key: 'blacklisted', label: 'ブラックリスト除外', count: blacklistedResults.length },
+    { key: 'history', label: '履歴' },
+  ];
 
   return (
     <div style={s.page}>
@@ -214,7 +221,7 @@ export default function SearchScraper() {
         </div>
       </div>
 
-      {/* ブラックリスト */}
+      {/* ブラックリスト設定 */}
       <div style={{ ...s.card, marginTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
           <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>ブラックリスト（URLプレフィックス）</p>
@@ -264,17 +271,17 @@ export default function SearchScraper() {
       {results.length > 0 && (
         <>
           <div style={s.tabBar}>
-            {(['results', 'history'] as const).map((t) => (
+            {TABS.map((t) => (
               <button
-                key={t}
-                onClick={() => { setTab(t); if (t === 'history') fetchHistory(); }}
+                key={t.key}
+                onClick={() => { setTab(t.key); if (t.key === 'history') fetchHistory(); }}
                 style={{
                   ...s.tabBtn,
-                  borderBottom: tab === t ? '2px solid #000' : '2px solid transparent',
-                  fontWeight: tab === t ? 500 : 400,
+                  borderBottom: tab === t.key ? '2px solid #000' : '2px solid transparent',
+                  fontWeight: tab === t.key ? 500 : 400,
                 }}
               >
-                {t === 'results' ? '検索結果' : '取得履歴'}
+                {t.label}{t.count !== undefined ? ` (${t.count})` : ''}
               </button>
             ))}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -300,23 +307,45 @@ export default function SearchScraper() {
           </div>
 
           <div style={{ ...s.card, borderTop: 'none', borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
-            {tab === 'results' && results.map((r) => (
-              <div key={r.url} style={{ ...s.resultRow, opacity: r.status !== 'new' ? 0.45 : 1 }}>
-                <div style={{ ...s.row, alignItems: 'center', marginBottom: 4 }}>
-                  <span style={s.resultUrl}>{r.url}</span>
-                  <Badge type={r.status}>
-                    {r.status === 'new' ? '新規' : r.status === 'duplicate' ? '重複' : 'BL除外'}
-                  </Badge>
-                </div>
-                <div style={s.resultTitle}>
-                  {r.status === 'new'
-                    ? <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: '#1558d6', textDecoration: 'none' }}>{r.title}</a>
-                    : r.title}
-                </div>
-                <div style={s.resultDesc}>{r.description}</div>
-              </div>
-            ))}
+            {/* 検索結果タブ（BL除外を含まない） */}
+            {tab === 'results' && (
+              searchResults.length === 0
+                ? <p style={{ fontSize: 13, color: '#666' }}>結果なし</p>
+                : searchResults.map((r) => (
+                  <div key={r.url} style={{ ...s.resultRow, opacity: r.status === 'duplicate' ? 0.45 : 1 }}>
+                    <div style={{ ...s.row, alignItems: 'center', marginBottom: 4 }}>
+                      <span style={s.resultUrl}>{r.url}</span>
+                      <Badge type={r.status}>
+                        {r.status === 'new' ? '新規' : '重複'}
+                      </Badge>
+                    </div>
+                    <div style={s.resultTitle}>
+                      {r.status === 'new'
+                        ? <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: '#1558d6', textDecoration: 'none' }}>{r.title}</a>
+                        : r.title}
+                    </div>
+                    <div style={s.resultDesc}>{r.description}</div>
+                  </div>
+                ))
+            )}
 
+            {/* ブラックリスト除外タブ */}
+            {tab === 'blacklisted' && (
+              blacklistedResults.length === 0
+                ? <p style={{ fontSize: 13, color: '#666' }}>除外なし</p>
+                : blacklistedResults.map((r) => (
+                  <div key={r.url} style={{ ...s.resultRow, opacity: 0.5 }}>
+                    <div style={{ ...s.row, alignItems: 'center', marginBottom: 4 }}>
+                      <span style={s.resultUrl}>{r.url}</span>
+                      <Badge type="blacklisted">BL除外</Badge>
+                    </div>
+                    <div style={s.resultTitle}>{r.title}</div>
+                    <div style={s.resultDesc}>{r.description}</div>
+                  </div>
+                ))
+            )}
+
+            {/* 履歴タブ */}
             {tab === 'history' && (
               history.length === 0
                 ? <p style={{ fontSize: 13, color: '#666' }}>履歴なし</p>
