@@ -14,12 +14,13 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
 };
 
-type DateRestrict = "w1" | "m1" | "y1";
+type DateRestrict = "d3" | "w1" | "w2" | "m1";
 
 const TBS_MAP: Record<DateRestrict, string> = {
+  d3: "qdr:d3",
   w1: "qdr:w",
+  w2: "qdr:w2",
   m1: "qdr:m",
-  y1: "qdr:y",
 };
 
 interface SearchResult {
@@ -71,6 +72,7 @@ async function readJson<T>(path: string): Promise<{ data: T; sha: string | undef
 }
 
 // ---- Serper API ----
+// maxResults=0 は無制限（最大5ページ×10件=50件）
 
 async function serperSearch(
   query: string,
@@ -79,7 +81,8 @@ async function serperSearch(
 ): Promise<SearchResult[]> {
   const results: SearchResult[] = [];
   const perPage = 10;
-  const pages = Math.min(Math.ceil(maxResults / perPage), 5);
+  const unlimited = maxResults === 0;
+  const pages = unlimited ? 5 : Math.min(Math.ceil(maxResults / perPage), 5);
 
   for (let page = 0; page < pages; page++) {
     const res = await fetch("https://google.serper.dev/search", {
@@ -109,9 +112,10 @@ async function serperSearch(
         description: item.snippet?.replace(/\n/g, " ") ?? "",
         fetchedAt: new Date().toISOString(),
       });
-      if (results.length >= maxResults) break;
+      if (!unlimited && results.length >= maxResults) break;
     }
-    if (items.length < perPage || results.length >= maxResults) break;
+    if (items.length < perPage) break;
+    if (!unlimited && results.length >= maxResults) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   return results;
@@ -157,15 +161,25 @@ export const handler: Handler = async (event: HandlerEvent) => {
       return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
     }
 
+    // PUT: ブラックリスト追加（単体 or CSV一括）
     if (method === "PUT") {
       const body = JSON.parse(event.body ?? "{}");
-      const prefix: string = body.prefix?.trim();
-      if (!prefix) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "prefix required" }) };
       const { data, sha } = await readJson<string[]>(BLACKLIST_PATH);
       const list = data as string[];
-      if (!list.includes(prefix)) {
-        list.push(prefix);
-        await ghPut(BLACKLIST_PATH, JSON.stringify(list), sha, `data: BLに追加 - ${prefix}`);
+
+      if (body.prefixes && Array.isArray(body.prefixes)) {
+        // CSV一括インポート
+        const incoming: string[] = body.prefixes.map((p: string) => p.trim()).filter(Boolean);
+        const merged = Array.from(new Set([...list, ...incoming]));
+        await ghPut(BLACKLIST_PATH, JSON.stringify(merged), sha, `data: BLに一括追加 - ${incoming.length}件`);
+      } else {
+        // 単体追加
+        const prefix: string = body.prefix?.trim();
+        if (!prefix) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "prefix required" }) };
+        if (!list.includes(prefix)) {
+          list.push(prefix);
+          await ghPut(BLACKLIST_PATH, JSON.stringify(list), sha, `data: BLに追加 - ${prefix}`);
+        }
       }
       return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
     }
@@ -174,7 +188,8 @@ export const handler: Handler = async (event: HandlerEvent) => {
       const body = JSON.parse(event.body ?? "{}");
       const query: string = body.query?.trim();
       const dateRestrict: DateRestrict = body.dateRestrict ?? "w1";
-      const maxResults = Math.min(Number(body.maxResults) || 10, 50);
+      // maxResults=0 を無制限として扱う
+      const maxResults = Number(body.maxResults) === 0 ? 0 : Math.min(Number(body.maxResults) || 10, 50);
       const deduplication: boolean = body.deduplication !== false;
 
       if (!query) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "query required" }) };

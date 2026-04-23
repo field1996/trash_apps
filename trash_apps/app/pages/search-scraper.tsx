@@ -1,7 +1,7 @@
 /* eslint-disable */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
-type DateRestrict = 'w1' | 'm1' | 'y1';
+type DateRestrict = 'd3' | 'w1' | 'w2' | 'm1';
 
 interface AnnotatedResult {
   url: string;
@@ -18,12 +18,28 @@ interface Stats {
   blacklisted: number;
 }
 
+interface HistoryItem {
+  query: string;
+  url: string;
+  title: string;
+  fetchedAt: string;
+}
+
 const API = '/.netlify/functions/search';
 
 const DATE_OPTIONS: { label: string; value: DateRestrict }[] = [
+  { label: '直近3日', value: 'd3' },
   { label: '直近1週間', value: 'w1' },
+  { label: '直近2週間', value: 'w2' },
   { label: '直近1ヶ月', value: 'm1' },
-  { label: '直近1年', value: 'y1' },
+];
+
+const COUNT_OPTIONS = [
+  { label: '10件', value: 10 },
+  { label: '20件', value: 20 },
+  { label: '30件', value: 30 },
+  { label: '50件', value: 50 },
+  { label: '無制限', value: 0 },
 ];
 
 export default function SearchScraper() {
@@ -40,11 +56,10 @@ export default function SearchScraper() {
 
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [blInput, setBlInput] = useState('');
+  const blFileRef = useRef<HTMLInputElement>(null);
 
   const [tab, setTab] = useState<'results' | 'history'>('results');
-  const [history, setHistory] = useState<{
-    query: string; url: string; title: string; fetchedAt: string
-  }[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const fetchBlacklist = useCallback(async () => {
     const res = await fetch(`${API}?action=blacklist`);
@@ -81,7 +96,7 @@ export default function SearchScraper() {
     await fetch(API, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prefix: blInput }),
+      body: JSON.stringify({ prefix: blInput.trim() }),
     });
     setBlInput('');
     fetchBlacklist();
@@ -90,6 +105,38 @@ export default function SearchScraper() {
   async function handleRemoveBl(prefix: string) {
     await fetch(`${API}?action=blacklist&prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
     fetchBlacklist();
+  }
+
+  // ブラックリスト CSVエクスポート
+  function exportBlCsv() {
+    const csv = 'prefix\n' + blacklist.map((p) => `"${p}"`).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `blacklist_${Date.now()}.csv`;
+    a.click();
+  }
+
+  // ブラックリスト CSVインポート
+  function handleBlFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.split(/\r?\n/).map((l) => l.trim().replace(/^"|"$/g, '').trim());
+      // ヘッダー行（prefix）と空行を除去
+      const prefixes = lines.filter((l) => l && l !== 'prefix');
+      if (prefixes.length === 0) return;
+      await fetch(API, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefixes }),
+      });
+      fetchBlacklist();
+      if (blFileRef.current) blFileRef.current.value = '';
+    };
+    reader.readAsText(file, 'UTF-8');
   }
 
   async function fetchHistory() {
@@ -154,7 +201,7 @@ export default function SearchScraper() {
           <div>
             <p style={s.label}>最大取得件数</p>
             <select value={maxResults} onChange={(e) => setMaxResults(Number(e.target.value))} style={s.input}>
-              {[10, 20, 30, 50].map((n) => <option key={n} value={n}>{n}件</option>)}
+              {COUNT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           <div>
@@ -169,8 +216,15 @@ export default function SearchScraper() {
 
       {/* ブラックリスト */}
       <div style={{ ...s.card, marginTop: 12 }}>
-        <p style={s.label}>ブラックリスト（URLプレフィックス）</p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>ブラックリスト（URLプレフィックス）</p>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={exportBlCsv} style={s.btnSm} disabled={blacklist.length === 0}>CSVエクスポート</button>
+            <button onClick={() => blFileRef.current?.click()} style={s.btnSm}>CSVインポート</button>
+            <input ref={blFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleBlFileChange} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, minHeight: 28 }}>
           {blacklist.length === 0 && <span style={{ fontSize: 12, color: '#999' }}>未設定</span>}
           {blacklist.map((prefix) => (
             <span key={prefix} style={s.tag}>
@@ -306,24 +360,24 @@ function Badge({ type, children }: { type: string; children: React.ReactNode }) 
 }
 
 const s = {
-  page:       { maxWidth: 800, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'system-ui, sans-serif' } as React.CSSProperties,
-  h1:         { fontSize: 20, fontWeight: 600, marginBottom: '1.5rem' } as React.CSSProperties,
-  card:       { background: '#fff', border: '0.5px solid #e0e0e0', borderRadius: 12, padding: '1rem 1.25rem' } as React.CSSProperties,
-  label:      { fontSize: 12, color: '#666', marginBottom: 6 } as React.CSSProperties,
-  row:        { display: 'flex', gap: 8 } as React.CSSProperties,
-  grid3:      { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 } as React.CSSProperties,
-  input:      { width: '100%', height: 36, padding: '0 10px', fontSize: 14, border: '0.5px solid #ccc', borderRadius: 8, boxSizing: 'border-box' } as React.CSSProperties,
-  btn:        { height: 36, padding: '0 14px', fontSize: 13, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
-  btnPrimary: { height: 36, padding: '0 14px', fontSize: 13, border: 'none', borderRadius: 8, background: '#000', color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
-  btnSm:      { height: 28, padding: '0 10px', fontSize: 12, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
-  tag:        { display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f5f5f5', border: '0.5px solid #ddd', borderRadius: 20, padding: '3px 10px', fontSize: 12 } as React.CSSProperties,
-  tagDel:     { background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 12, color: '#999', lineHeight: 1 } as React.CSSProperties,
-  statusBar:  { marginTop: 12, background: '#f5f5f5', borderRadius: 8, padding: '0.5rem 0.75rem', fontSize: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' } as React.CSSProperties,
-  errorBox:   { marginTop: 12, padding: '0.75rem 1rem', background: '#fef2f2', border: '0.5px solid #fca5a5', borderRadius: 8, fontSize: 13, color: '#991b1b' } as React.CSSProperties,
-  tabBar:     { display: 'flex', gap: 0, marginTop: 16, borderBottom: '0.5px solid #e0e0e0', alignItems: 'center' } as React.CSSProperties,
-  tabBtn:     { background: 'none', border: 'none', padding: '0.5rem 1rem', fontSize: 13, cursor: 'pointer' } as React.CSSProperties,
-  resultRow:  { padding: '0.75rem 0', borderBottom: '0.5px solid #e0e0e0' } as React.CSSProperties,
-  resultUrl:  { flex: 1, fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as React.CSSProperties,
-  resultTitle:{ fontSize: 14, fontWeight: 500, margin: '3px 0' } as React.CSSProperties,
-  resultDesc: { fontSize: 12, color: '#555', lineHeight: 1.5 } as React.CSSProperties,
+  page:        { maxWidth: 800, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'system-ui, sans-serif' } as React.CSSProperties,
+  h1:          { fontSize: 20, fontWeight: 600, marginBottom: '1.5rem' } as React.CSSProperties,
+  card:        { background: '#fff', border: '0.5px solid #e0e0e0', borderRadius: 12, padding: '1rem 1.25rem' } as React.CSSProperties,
+  label:       { fontSize: 12, color: '#666', marginBottom: 6 } as React.CSSProperties,
+  row:         { display: 'flex', gap: 8 } as React.CSSProperties,
+  grid3:       { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 } as React.CSSProperties,
+  input:       { width: '100%', height: 36, padding: '0 10px', fontSize: 14, border: '0.5px solid #ccc', borderRadius: 8, boxSizing: 'border-box' } as React.CSSProperties,
+  btn:         { height: 36, padding: '0 14px', fontSize: 13, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
+  btnPrimary:  { height: 36, padding: '0 14px', fontSize: 13, border: 'none', borderRadius: 8, background: '#000', color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
+  btnSm:       { height: 28, padding: '0 10px', fontSize: 12, border: '0.5px solid #ccc', borderRadius: 8, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' } as React.CSSProperties,
+  tag:         { display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f5f5f5', border: '0.5px solid #ddd', borderRadius: 20, padding: '3px 10px', fontSize: 12 } as React.CSSProperties,
+  tagDel:      { background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 12, color: '#999', lineHeight: 1 } as React.CSSProperties,
+  statusBar:   { marginTop: 12, background: '#f5f5f5', borderRadius: 8, padding: '0.5rem 0.75rem', fontSize: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' } as React.CSSProperties,
+  errorBox:    { marginTop: 12, padding: '0.75rem 1rem', background: '#fef2f2', border: '0.5px solid #fca5a5', borderRadius: 8, fontSize: 13, color: '#991b1b' } as React.CSSProperties,
+  tabBar:      { display: 'flex', gap: 0, marginTop: 16, borderBottom: '0.5px solid #e0e0e0', alignItems: 'center' } as React.CSSProperties,
+  tabBtn:      { background: 'none', border: 'none', padding: '0.5rem 1rem', fontSize: 13, cursor: 'pointer' } as React.CSSProperties,
+  resultRow:   { padding: '0.75rem 0', borderBottom: '0.5px solid #e0e0e0' } as React.CSSProperties,
+  resultUrl:   { flex: 1, fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as React.CSSProperties,
+  resultTitle: { fontSize: 14, fontWeight: 500, margin: '3px 0' } as React.CSSProperties,
+  resultDesc:  { fontSize: 12, color: '#555', lineHeight: 1.5 } as React.CSSProperties,
 };
