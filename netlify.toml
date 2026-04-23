@@ -1,10 +1,10 @@
 [build]
   base = "trash_apps/app"
   command = "npm run build"
-  publish = "trash_apps/app/.next"
+  publish = ".next"
 
 [functions]
-  directory = "trash_apps/netlify/functions"
+  directory = "../../trash_apps/netlify/functions"
   node_bundler = "esbuild"
 
 [[headers]]
