@@ -171,7 +171,7 @@ export default function SearchScraper() {
               searchQuery: target.searchQuery,
               dateRestrict,
               page,
-              deduplication: false,
+              deduplication,
               isLast: false,
             }),
           });
