@@ -53,9 +53,9 @@ function extractHost(url: string): string {
 }
 
 // キーワードの全単語がタイトルに含まれるか（ホワイトリストドメインは除外）
-function titleContainsKeyword(title: string, keyword: string): boolean {
+function containsKeyword(text: string, keyword: string): boolean {
   const words = keyword.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  return words.every((w) => title.toLowerCase().includes(w));
+  return words.every((w) => text.toLowerCase().includes(w));
 }
 
 export default function SearchScraper() {
@@ -141,8 +141,8 @@ export default function SearchScraper() {
         isDomainSearch: true,
       })),
       {
-        searchQuery: `intitle:${query}`,
-        label: 'ウェブ全体（intitle）',
+        searchQuery: query,
+        label: 'ウェブ全体',
         isDomainSearch: false,
       },
     ];
@@ -204,7 +204,13 @@ export default function SearchScraper() {
         const host = extractHost(r.url);
         const isWhitelisted = whitelist.some((w) => host === w || host.endsWith('.' + w));
         if (isWhitelisted) return true;
-        return titleContainsKeyword(r.title, query);
+        return containsKeyword(r.title, query);
+      });
+
+      // ステップ2: タイトルとディスクリプション両方にkeywordが含まれていないものを削除
+      // ホワイトリストも含む全ドメインが対象・どちらか一方にあればOK
+      merged = merged.filter((r) => {
+        return containsKeyword(r.title, query) || containsKeyword(r.description, query);
       });
 
       const final = unlimited ? merged : merged.slice(0, maxResults);
