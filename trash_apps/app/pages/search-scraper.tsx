@@ -43,15 +43,25 @@ const COUNT_OPTIONS = [
   { label: '50件', value: 50 },
 ];
 
-// ドメイン文字列を正規化（プロトコル・末尾スラッシュを除去）
 function normalizeDomain(raw: string): string {
   return raw.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+// URLのホスト部分を抽出
+function extractHost(url: string): string {
+  try { return new URL(url).hostname; } catch { return ''; }
+}
+
+// キーワードの全単語がタイトルに含まれるか（ホワイトリストドメインは除外）
+function titleContainsKeyword(title: string, keyword: string): boolean {
+  const words = keyword.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return words.every((w) => title.toLowerCase().includes(w));
 }
 
 export default function SearchScraper() {
   const [query, setQuery] = useState('');
   const [dateRestrict, setDateRestrict] = useState<DateRestrict>('w1');
-  const [maxResults, setMaxResults] = useState(0); // 無制限がデフォルト
+  const [maxResults, setMaxResults] = useState(0);
   const [deduplication, setDeduplication] = useState(true);
 
   const [results, setResults] = useState<AnnotatedResult[]>([]);
@@ -59,7 +69,6 @@ export default function SearchScraper() {
   const [lastRun, setLastRun] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // モーダル状態
   const [modalOpen, setModalOpen] = useState(false);
   const [modalStatus, setModalStatus] = useState('');
   const [modalTotal, setModalTotal] = useState(0);
@@ -67,7 +76,7 @@ export default function SearchScraper() {
   const [modalError, setModalError] = useState<string | null>(null);
   const abortRef = useRef(false);
 
-  // ブラックリスト
+  // URLブラックリスト
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [blInput, setBlInput] = useState('');
   const blFileRef = useRef<HTMLInputElement>(null);
@@ -77,28 +86,36 @@ export default function SearchScraper() {
   const [domainInput, setDomainInput] = useState('');
   const domainFileRef = useRef<HTMLInputElement>(null);
 
+  // タイトルフィルタ除外ホワイトリスト
+  const [whitelist, setWhitelist] = useState<string[]>([]);
+  const [wlInput, setWlInput] = useState('');
+  const wlFileRef = useRef<HTMLInputElement>(null);
+
   const [tab, setTab] = useState<TabType>('results');
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const fetchBlacklist = useCallback(async () => {
     const res = await fetch(`${API}?action=blacklist`);
-    const data = await res.json();
-    setBlacklist(data.blacklist ?? []);
+    setBlacklist((await res.json()).blacklist ?? []);
   }, []);
 
   const fetchDomains = useCallback(async () => {
     const res = await fetch(`${API}?action=domains`);
-    const data = await res.json();
-    setDomains(data.domains ?? []);
+    setDomains((await res.json()).domains ?? []);
+  }, []);
+
+  const fetchWhitelist = useCallback(async () => {
+    const res = await fetch(`${API}?action=whitelist`);
+    setWhitelist((await res.json()).whitelist ?? []);
   }, []);
 
   useEffect(() => {
     fetchBlacklist();
     fetchDomains();
-  }, [fetchBlacklist, fetchDomains]);
+    fetchWhitelist();
+  }, [fetchBlacklist, fetchDomains, fetchWhitelist]);
 
   // ---- 検索実行 ----
-  // 検索クエリのリストを作成して順番にページループ
   async function handleSearch() {
     if (!query.trim()) return;
 
@@ -110,16 +127,26 @@ export default function SearchScraper() {
     setModalError(null);
     setError(null);
 
-    // 検索するクエリ一覧：ドメインあり → ドメインなし
-    const searchTargets: { searchQuery: string; label: string }[] = [
+    // ドメイン指定検索は1ドメインあたり最大2ページ（20件）
+    const DOMAIN_MAX_PAGES = 2;
+
+    const searchTargets: {
+      searchQuery: string;
+      label: string;
+      isDomainSearch: boolean;
+    }[] = [
       ...domains.map((d) => ({
         searchQuery: `${query} site:${normalizeDomain(d)}`,
         label: `site:${normalizeDomain(d)}`,
+        isDomainSearch: true,
       })),
-      { searchQuery: query, label: 'キーワードのみ' },
+      {
+        searchQuery: `intitle:${query}`,
+        label: 'ウェブ全体（intitle）',
+        isDomainSearch: false,
+      },
     ];
 
-    // 全リクエストの結果をURL単位でマージ（重複排除）
     const allRawByUrl = new Map<string, AnnotatedResult>();
     const unlimited = maxResults === 0;
 
@@ -128,15 +155,13 @@ export default function SearchScraper() {
         if (abortRef.current) break;
 
         const target = searchTargets[ti];
+        const maxPages = target.isDomainSearch ? DOMAIN_MAX_PAGES : Infinity;
         let page = 1;
 
-        while (true) {
+        while (page <= maxPages) {
           if (abortRef.current) break;
 
           setModalStatus(`[${ti + 1}/${searchTargets.length}] ${target.label} — ${page}ページ目`);
-
-          const isLastTarget = ti === searchTargets.length - 1;
-          const isLastPage = false; // 最終判定はフロント側でまとめて行う
 
           const res = await fetch(API, {
             method: 'POST',
@@ -146,7 +171,7 @@ export default function SearchScraper() {
               searchQuery: target.searchQuery,
               dateRestrict,
               page,
-              deduplication: false, // フロントで一括処理するため個別保存はしない
+              deduplication: false,
               isLast: false,
             }),
           });
@@ -154,12 +179,8 @@ export default function SearchScraper() {
           if (!res.ok) throw new Error(data.error ?? '検索に失敗しました');
 
           const pageResults: AnnotatedResult[] = data.results ?? [];
-
-          // URLでマージ（先着優先）
           for (const r of pageResults) {
-            if (!allRawByUrl.has(r.url)) {
-              allRawByUrl.set(r.url, r);
-            }
+            if (!allRawByUrl.has(r.url)) allRawByUrl.set(r.url, r);
           }
 
           setModalTotal(allRawByUrl.size);
@@ -174,30 +195,34 @@ export default function SearchScraper() {
         if (!unlimited && allRawByUrl.size >= maxResults) break;
       }
 
-      // マージ済みの全結果に対して履歴重複・BL判定を行い、最終保存
-      const merged = Array.from(allRawByUrl.values());
+      // 全結果をマージ
+      let merged = Array.from(allRawByUrl.values());
+
+      // タイトルフィルタリング：
+      // ホワイトリストドメインはスキップ、それ以外はタイトルにキーワードが含まれないものを除外
+      merged = merged.filter((r) => {
+        const host = extractHost(r.url);
+        const isWhitelisted = whitelist.some((w) => host === w || host.endsWith('.' + w));
+        if (isWhitelisted) return true;
+        return titleContainsKeyword(r.title, query);
+      });
+
       const final = unlimited ? merged : merged.slice(0, maxResults);
 
-      // 最終バッチとして履歴保存（isLast=trueで1回だけ）
+      // 最終保存（Serperを叩かず履歴保存のみ）
       if (final.length > 0) {
         await fetch(API, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             query,
-            searchQuery: query,
-            dateRestrict,
-            page: 1,
             deduplication,
             isLast: true,
-            // 結果を直接渡すのではなくFunctionが履歴を参照して保存するため、
-            // ダミーで1件だけ叩く（実際の保存はisLast=trueのリクエストで行う）
+            finalResults: final.map(({ url, title, description, fetchedAt }) => ({ url, title, description, fetchedAt })),
           }),
         });
       }
 
-      // BL・重複をクライアント側で最終判定（表示用）
-      // 履歴は最終保存後にFunctionが参照するため、ここではstatusを仮設定
       setResults(final);
       setStats({
         total: final.length,
@@ -219,79 +244,80 @@ export default function SearchScraper() {
   function handleAbort() { abortRef.current = true; }
   function handleModalClose() { setModalOpen(false); }
 
-  // ---- ブラックリスト ----
+  // ---- URLブラックリスト ----
   async function handleAddBl() {
     if (!blInput.trim()) return;
     await fetch(API, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: blInput.trim() }) });
-    setBlInput('');
-    fetchBlacklist();
+    setBlInput(''); fetchBlacklist();
   }
-
   async function handleRemoveBl(prefix: string) {
     await fetch(`${API}?action=blacklist&prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
     fetchBlacklist();
   }
-
   function exportBlCsv() {
-    const csv = 'prefix\n' + blacklist.map((p) => `"${p}"`).join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `blacklist_${Date.now()}.csv`;
-    a.click();
+    const blob = new Blob(['\uFEFF' + 'prefix\n' + blacklist.map((p) => `"${p}"`).join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `blacklist_${Date.now()}.csv`; a.click();
   }
-
   function handleBlFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const text = ev.target?.result as string;
-      const lines = text.split(/\r?\n/).map((l) => l.trim().replace(/^"|"$/g, '').trim());
-      const prefixes = lines.filter((l) => l && l !== 'prefix');
-      if (prefixes.length === 0) return;
-      await fetch(API, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes }) });
-      fetchBlacklist();
-      if (blFileRef.current) blFileRef.current.value = '';
+      const lines = (ev.target?.result as string).split(/\r?\n/).map((l) => l.trim().replace(/^"|"$/g, '').trim()).filter((l) => l && l !== 'prefix');
+      if (lines.length === 0) return;
+      await fetch(API, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: lines }) });
+      fetchBlacklist(); if (blFileRef.current) blFileRef.current.value = '';
     };
     reader.readAsText(file, 'UTF-8');
   }
 
   // ---- 対象ドメイン ----
   async function handleAddDomain() {
-    const d = normalizeDomain(domainInput);
-    if (!d) return;
+    const d = normalizeDomain(domainInput); if (!d) return;
     await fetch(`${API}?action=domains`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: d }) });
-    setDomainInput('');
-    fetchDomains();
+    setDomainInput(''); fetchDomains();
   }
-
   async function handleRemoveDomain(domain: string) {
     await fetch(`${API}?action=domains&domain=${encodeURIComponent(domain)}`, { method: 'DELETE' });
     fetchDomains();
   }
-
   function exportDomainCsv() {
-    const csv = 'domain\n' + domains.map((d) => `"${d}"`).join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `domains_${Date.now()}.csv`;
-    a.click();
+    const blob = new Blob(['\uFEFF' + 'domain\n' + domains.map((d) => `"${d}"`).join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `domains_${Date.now()}.csv`; a.click();
   }
-
   function handleDomainFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const text = ev.target?.result as string;
-      const lines = text.split(/\r?\n/).map((l) => normalizeDomain(l.replace(/^"|"$/g, '')));
-      const domainList = lines.filter((l) => l && l !== 'domain');
-      if (domainList.length === 0) return;
-      await fetch(`${API}?action=domains`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domains: domainList }) });
-      fetchDomains();
-      if (domainFileRef.current) domainFileRef.current.value = '';
+      const lines = (ev.target?.result as string).split(/\r?\n/).map((l) => normalizeDomain(l.replace(/^"|"$/g, ''))).filter((l) => l && l !== 'domain');
+      if (lines.length === 0) return;
+      await fetch(`${API}?action=domains`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domains: lines }) });
+      fetchDomains(); if (domainFileRef.current) domainFileRef.current.value = '';
+    };
+    reader.readAsText(file, 'UTF-8');
+  }
+
+  // ---- タイトルフィルタ除外ホワイトリスト ----
+  async function handleAddWl() {
+    const d = normalizeDomain(wlInput); if (!d) return;
+    await fetch(`${API}?action=whitelist`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: d }) });
+    setWlInput(''); fetchWhitelist();
+  }
+  async function handleRemoveWl(domain: string) {
+    await fetch(`${API}?action=whitelist&domain=${encodeURIComponent(domain)}`, { method: 'DELETE' });
+    fetchWhitelist();
+  }
+  function exportWlCsv() {
+    const blob = new Blob(['\uFEFF' + 'domain\n' + whitelist.map((d) => `"${d}"`).join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `whitelist_${Date.now()}.csv`; a.click();
+  }
+  function handleWlFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const lines = (ev.target?.result as string).split(/\r?\n/).map((l) => normalizeDomain(l.replace(/^"|"$/g, ''))).filter((l) => l && l !== 'domain');
+      if (lines.length === 0) return;
+      await fetch(`${API}?action=whitelist`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domains: lines }) });
+      fetchWhitelist(); if (wlFileRef.current) wlFileRef.current.value = '';
     };
     reader.readAsText(file, 'UTF-8');
   }
@@ -299,10 +325,8 @@ export default function SearchScraper() {
   // ---- 履歴 ----
   async function fetchHistory() {
     const res = await fetch(`${API}?action=history`);
-    const data = await res.json();
-    setHistory(data.history ?? []);
+    setHistory((await res.json()).history ?? []);
   }
-
   async function handleClearHistory() {
     if (!confirm('取得履歴を全件削除しますか？')) return;
     await fetch(`${API}?action=history`, { method: 'DELETE' });
@@ -312,14 +336,10 @@ export default function SearchScraper() {
   // ---- CSV ----
   function exportCsv() {
     const header = 'status,url,title,description,fetchedAt';
-    const rows = results
-      .filter((r) => r.status !== 'blacklisted')
+    const rows = results.filter((r) => r.status !== 'blacklisted')
       .map((r) => `"${r.status}","${r.url}","${r.title.replace(/"/g, '""')}","${r.description.replace(/"/g, '""')}","${r.fetchedAt}"`);
     const blob = new Blob(['\uFEFF' + [header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `search_${query}_${Date.now()}.csv`;
-    a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `search_${query}_${Date.now()}.csv`; a.click();
   }
 
   function formatRelative(date: Date): string {
@@ -347,7 +367,8 @@ export default function SearchScraper() {
       <div style={s.card}>
         <p style={s.label}>検索キーワード</p>
         <div style={s.row}>
-          <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          <input value={query} onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             placeholder="例: Next.js パフォーマンス" style={{ ...s.input, flex: 1 }} />
           <button onClick={handleSearch} disabled={modalOpen && !modalDone} style={s.btnPrimary}>検索実行</button>
         </div>
@@ -377,54 +398,74 @@ export default function SearchScraper() {
       {/* 対象ドメイン */}
       <div style={{ ...s.card, marginTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>対象ドメイン（未設定時はウェブ全体）</p>
+          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>対象ドメイン（各20件上限 / 未設定時はウェブ全体のみ）</p>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={exportDomainCsv} style={s.btnSm} disabled={domains.length === 0}>CSVエクスポート</button>
-            <button onClick={() => domainFileRef.current?.click()} style={s.btnSm}>CSVインポート</button>
+            <button onClick={exportDomainCsv} style={s.btnSm} disabled={domains.length === 0}>CSV</button>
+            <button onClick={() => domainFileRef.current?.click()} style={s.btnSm}>CSV取込</button>
             <input ref={domainFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleDomainFileChange} />
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, minHeight: 28 }}>
-          {domains.length === 0 && <span style={{ fontSize: 12, color: '#999' }}>未設定（ウェブ全体を検索）</span>}
+          {domains.length === 0 && <span style={{ fontSize: 12, color: '#999' }}>未設定</span>}
           {domains.map((d) => (
-            <span key={d} style={s.tag}>
-              {d}
-              <button onClick={() => handleRemoveDomain(d)} style={s.tagDel}>×</button>
-            </span>
+            <span key={d} style={s.tag}>{d}<button onClick={() => handleRemoveDomain(d)} style={s.tagDel}>×</button></span>
           ))}
         </div>
         <div style={s.row}>
           <input value={domainInput} onChange={(e) => setDomainInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleAddDomain()}
-            placeholder="example.com を追加（http://不要）" style={{ ...s.input, flex: 1 }} />
+            placeholder="example.com" style={{ ...s.input, flex: 1 }} />
           <button onClick={handleAddDomain} style={s.btn}>追加</button>
         </div>
       </div>
 
-      {/* ブラックリスト */}
+      {/* URLブラックリスト */}
       <div style={{ ...s.card, marginTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>ブラックリスト（URLプレフィックス）</p>
+          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>URLブラックリスト（プレフィックス一致で除外）</p>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={exportBlCsv} style={s.btnSm} disabled={blacklist.length === 0}>CSVエクスポート</button>
-            <button onClick={() => blFileRef.current?.click()} style={s.btnSm}>CSVインポート</button>
+            <button onClick={exportBlCsv} style={s.btnSm} disabled={blacklist.length === 0}>CSV</button>
+            <button onClick={() => blFileRef.current?.click()} style={s.btnSm}>CSV取込</button>
             <input ref={blFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleBlFileChange} />
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, minHeight: 28 }}>
           {blacklist.length === 0 && <span style={{ fontSize: 12, color: '#999' }}>未設定</span>}
-          {blacklist.map((prefix) => (
-            <span key={prefix} style={s.tag}>
-              {prefix}
-              <button onClick={() => handleRemoveBl(prefix)} style={s.tagDel}>×</button>
-            </span>
+          {blacklist.map((p) => (
+            <span key={p} style={s.tag}>{p}<button onClick={() => handleRemoveBl(p)} style={s.tagDel}>×</button></span>
           ))}
         </div>
         <div style={s.row}>
           <input value={blInput} onChange={(e) => setBlInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleAddBl()}
-            placeholder="example.com を追加..." style={{ ...s.input, flex: 1 }} />
+            placeholder="example.com/path" style={{ ...s.input, flex: 1 }} />
           <button onClick={handleAddBl} style={s.btn}>追加</button>
+        </div>
+      </div>
+
+      {/* タイトルフィルタ除外ホワイトリスト */}
+      <div style={{ ...s.card, marginTop: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>タイトルフィルタ除外（キーワードなしタイトルを許容するドメイン）</p>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={exportWlCsv} style={s.btnSm} disabled={whitelist.length === 0}>CSV</button>
+            <button onClick={() => wlFileRef.current?.click()} style={s.btnSm}>CSV取込</button>
+            <input ref={wlFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleWlFileChange} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, minHeight: 28 }}>
+          {whitelist.length === 0 && <span style={{ fontSize: 12, color: '#999' }}>未設定（全ドメインにタイトルフィルタ適用）</span>}
+          {whitelist.map((d) => (
+            <span key={d} style={{ ...s.tag, background: '#e6f4ea', borderColor: '#a8d5b5' }}>
+              {d}<button onClick={() => handleRemoveWl(d)} style={s.tagDel}>×</button>
+            </span>
+          ))}
+        </div>
+        <div style={s.row}>
+          <input value={wlInput} onChange={(e) => setWlInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddWl()}
+            placeholder="example.com" style={{ ...s.input, flex: 1 }} />
+          <button onClick={handleAddWl} style={s.btn}>追加</button>
         </div>
       </div>
 
@@ -528,9 +569,7 @@ export default function SearchScraper() {
             </p>
             {!modalError && (
               <>
-                <p style={{ fontSize: 12, color: '#666', marginBottom: 10, textAlign: 'center', minHeight: 18 }}>
-                  {modalStatus}
-                </p>
+                <p style={{ fontSize: 12, color: '#666', marginBottom: 10, textAlign: 'center', minHeight: 18 }}>{modalStatus}</p>
                 <div style={s.progressBar}>
                   <div style={{ ...s.progressFill, width: modalDone ? '100%' : '60%', background: modalDone ? '#1e7e34' : '#1558d6' }} />
                 </div>
