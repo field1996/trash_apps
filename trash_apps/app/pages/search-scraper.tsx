@@ -10,6 +10,7 @@ interface AnnotatedResult {
   description: string;
   fetchedAt: string;
   status: 'new' | 'duplicate' | 'blacklisted';
+  registered?: boolean;
 }
 
 interface Stats {
@@ -24,6 +25,13 @@ interface HistoryItem {
   url: string;
   title: string;
   fetchedAt: string;
+  registered?: boolean;
+}
+
+interface LastResultPayload {
+  query: string;
+  executedAt: string;
+  results: AnnotatedResult[];
 }
 
 const API = '/.netlify/functions/search';
@@ -47,12 +55,10 @@ function normalizeDomain(raw: string): string {
   return raw.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
-// URLのホスト部分を抽出
 function extractHost(url: string): string {
   try { return new URL(url).hostname; } catch { return ''; }
 }
 
-// キーワードの全単語がタイトルに含まれるか（ホワイトリストドメインは除外）
 function containsKeyword(text: string, keyword: string): boolean {
   const words = keyword.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return words.every((w) => text.toLowerCase().includes(w));
@@ -68,6 +74,7 @@ export default function SearchScraper() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [lastRun, setLastRun] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastResultPayload, setLastResultPayload] = useState<LastResultPayload | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalStatus, setModalStatus] = useState('');
@@ -76,17 +83,14 @@ export default function SearchScraper() {
   const [modalError, setModalError] = useState<string | null>(null);
   const abortRef = useRef(false);
 
-  // URLブラックリスト
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [blInput, setBlInput] = useState('');
   const blFileRef = useRef<HTMLInputElement>(null);
 
-  // 対象ドメイン
   const [domains, setDomains] = useState<string[]>([]);
   const [domainInput, setDomainInput] = useState('');
   const domainFileRef = useRef<HTMLInputElement>(null);
 
-  // タイトルフィルタ除外ホワイトリスト
   const [whitelist, setWhitelist] = useState<string[]>([]);
   const [wlInput, setWlInput] = useState('');
   const wlFileRef = useRef<HTMLInputElement>(null);
@@ -110,17 +114,17 @@ export default function SearchScraper() {
   }, []);
 
   const fetchLastResult = useCallback(async () => {
-  // 結果がすでにある場合は上書きしない（検索実行後のリロードは除く）
     const res = await fetch(`${API}?action=last_result`);
     const data = await res.json();
-    const payload = data.lastResult;
+    const payload: LastResultPayload = data.lastResult;
     if (!payload || !payload.results) return;
+    setLastResultPayload(payload);
     setResults(payload.results);
     setStats({
       total: payload.results.length,
-      new: payload.results.filter((r: AnnotatedResult) => r.status === 'new').length,
-      duplicate: payload.results.filter((r: AnnotatedResult) => r.status === 'duplicate').length,
-      blacklisted: payload.results.filter((r: AnnotatedResult) => r.status === 'blacklisted').length,
+      new: payload.results.filter((r) => r.status === 'new').length,
+      duplicate: payload.results.filter((r) => r.status === 'duplicate').length,
+      blacklisted: payload.results.filter((r) => r.status === 'blacklisted').length,
     });
     setLastRun(new Date(payload.executedAt));
     setQuery(payload.query ?? '');
@@ -131,7 +135,7 @@ export default function SearchScraper() {
     fetchDomains();
     fetchWhitelist();
     fetchLastResult();
-  }, [fetchBlacklist, fetchDomains, fetchWhitelist, fetchLastResult ]);
+  }, [fetchBlacklist, fetchDomains, fetchWhitelist, fetchLastResult]);
 
   // ---- 検索実行 ----
   async function handleSearch() {
@@ -145,7 +149,6 @@ export default function SearchScraper() {
     setModalError(null);
     setError(null);
 
-    // ドメイン指定検索は1ドメインあたり最大2ページ（20件）
     const DOMAIN_MAX_PAGES = 2;
 
     const searchTargets: {
@@ -213,11 +216,9 @@ export default function SearchScraper() {
         if (!unlimited && allRawByUrl.size >= maxResults) break;
       }
 
-      // 全結果をマージ
       let merged = Array.from(allRawByUrl.values());
 
-      // タイトルフィルタリング：
-      // ホワイトリストドメインはスキップ、それ以外はタイトルにキーワードが含まれないものを除外
+      // ステップ1: タイトルにkeywordが含まれていないものを削除（ホワイトリストはスキップ）
       merged = merged.filter((r) => {
         const host = extractHost(r.url);
         const isWhitelisted = whitelist.some((w) => host === w || host.endsWith('.' + w));
@@ -225,15 +226,14 @@ export default function SearchScraper() {
         return containsKeyword(r.title, query);
       });
 
-      // ステップ2: タイトルとディスクリプション両方にkeywordが含まれていないものを削除
-      // ホワイトリストも含む全ドメインが対象・どちらか一方にあればOK
-      merged = merged.filter((r) => {
-        return containsKeyword(r.title, query) || containsKeyword(r.description, query);
-      });
+      // ステップ2: タイトルとディスクリプション両方にkeywordが含まれていないものを削除（ホワイトリスト含む全対象）
+      merged = merged.filter((r) =>
+        containsKeyword(r.title, query) || containsKeyword(r.description, query)
+      );
 
       const final = unlimited ? merged : merged.slice(0, maxResults);
 
-      // 最終保存（Serperを叩かず履歴保存のみ）
+      // 最終保存
       if (final.length > 0) {
         await fetch(API, {
           method: 'POST',
@@ -242,11 +242,20 @@ export default function SearchScraper() {
             query,
             deduplication,
             isLast: true,
-            finalResults: final.map(({ url, title, description, fetchedAt }) => ({ url, title, description, fetchedAt })),
+            finalResults: final.map(({ url, title, description, fetchedAt, status }) => ({
+              url, title, description, fetchedAt, status,
+            })),
           }),
         });
       }
 
+      const now = new Date();
+      const newPayload: LastResultPayload = {
+        query,
+        executedAt: now.toISOString(),
+        results: final,
+      };
+      setLastResultPayload(newPayload);
       setResults(final);
       setStats({
         total: final.length,
@@ -254,7 +263,7 @@ export default function SearchScraper() {
         duplicate: final.filter((r) => r.status === 'duplicate').length,
         blacklisted: final.filter((r) => r.status === 'blacklisted').length,
       });
-      setLastRun(new Date());
+      setLastRun(now);
       setTab('results');
       setModalDone(true);
 
@@ -267,6 +276,32 @@ export default function SearchScraper() {
 
   function handleAbort() { abortRef.current = true; }
   function handleModalClose() { setModalOpen(false); }
+
+  // ---- 登録済みトグル ----
+  async function handleToggleRegistered(url: string) {
+    const updated = results.map((r) =>
+      r.url === url ? { ...r, registered: !r.registered } : r
+    );
+    setResults(updated);
+
+    const newPayload: LastResultPayload = {
+      query: lastResultPayload?.query ?? query,
+      executedAt: lastResultPayload?.executedAt ?? new Date().toISOString(),
+      results: updated,
+    };
+    setLastResultPayload(newPayload);
+
+    await fetch(`${API}?action=last_result`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payload: newPayload }),
+    });
+
+    // 履歴タブが開いている場合は履歴にも反映
+    setHistory((prev) =>
+      prev.map((h) => h.url === url ? { ...h, registered: !h.registered } : h)
+    );
+  }
 
   // ---- URLブラックリスト ----
   async function handleAddBl() {
@@ -359,9 +394,9 @@ export default function SearchScraper() {
 
   // ---- CSV ----
   function exportCsv() {
-    const header = 'status,url,title,description,fetchedAt';
+    const header = 'status,registered,url,title,description,fetchedAt';
     const rows = results.filter((r) => r.status !== 'blacklisted')
-      .map((r) => `"${r.status}","${r.url}","${r.title.replace(/"/g, '""')}","${r.description.replace(/"/g, '""')}","${r.fetchedAt}"`);
+      .map((r) => `"${r.status}","${r.registered ? '登録済み' : ''}","${r.url}","${r.title.replace(/"/g, '""')}","${r.description.replace(/"/g, '""')}","${r.fetchedAt}"`);
     const blob = new Blob(['\uFEFF' + [header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `search_${query}_${Date.now()}.csv`; a.click();
   }
@@ -470,7 +505,7 @@ export default function SearchScraper() {
       {/* タイトルフィルタ除外ホワイトリスト */}
       <div style={{ ...s.card, marginTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>タイトルフィルタ除外（キーワードなしタイトルを許容するドメイン）</p>
+          <p style={{ ...s.label, marginBottom: 0, flex: 1 }}>タイトルフィルタ除外（ステップ1をスキップするドメイン）</p>
           <div style={{ display: 'flex', gap: 6 }}>
             <button onClick={exportWlCsv} style={s.btnSm} disabled={whitelist.length === 0}>CSV</button>
             <button onClick={() => wlFileRef.current?.click()} style={s.btnSm}>CSV取込</button>
@@ -502,6 +537,7 @@ export default function SearchScraper() {
           <Badge type="new">新規 {stats.new}件</Badge>
           <Badge type="duplicate">重複 {stats.duplicate}件</Badge>
           <Badge type="blacklisted">BL除外 {stats.blacklisted}件</Badge>
+          <Badge type="registered">登録済み {results.filter((r) => r.registered).length}件</Badge>
           <span style={{ marginLeft: 'auto', color: '#999', fontSize: 12 }}>
             合計 {stats.total}件{lastRun && ` · ${formatRelative(lastRun)}`}
           </span>
@@ -542,7 +578,23 @@ export default function SearchScraper() {
                   <div key={r.url} style={{ ...s.resultRow, opacity: r.status === 'duplicate' ? 0.45 : 1 }}>
                     <div style={{ ...s.row, alignItems: 'center', marginBottom: 4 }}>
                       <span style={s.resultUrl}>{r.url}</span>
-                      <Badge type={r.status}>{r.status === 'new' ? '新規' : '重複'}</Badge>
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+                        <Badge type={r.status}>{r.status === 'new' ? '新規' : '重複'}</Badge>
+                        <button
+                          onClick={() => handleToggleRegistered(r.url)}
+                          style={{
+                            height: 22, padding: '0 8px', fontSize: 11,
+                            border: '0.5px solid',
+                            borderColor: r.registered ? '#1558d6' : '#ccc',
+                            borderRadius: 20, cursor: 'pointer',
+                            background: r.registered ? '#1558d6' : 'none',
+                            color: r.registered ? '#fff' : '#999',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {r.registered ? '✓ 登録済み' : '登録'}
+                        </button>
+                      </div>
                     </div>
                     <div style={s.resultTitle}>
                       {r.status === 'new'
@@ -570,8 +622,11 @@ export default function SearchScraper() {
               history.length === 0 ? <p style={{ fontSize: 13, color: '#666' }}>履歴なし</p>
                 : history.map((h, i) => (
                   <div key={i} style={s.resultRow}>
-                    <div style={{ fontSize: 11, color: '#999', marginBottom: 2 }}>
-                      {h.url} · {new Date(h.fetchedAt).toLocaleString('ja-JP')}
+                    <div style={{ ...s.row, alignItems: 'center', marginBottom: 2 }}>
+                      <span style={{ fontSize: 11, color: '#999', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {h.url} · {new Date(h.fetchedAt).toLocaleString('ja-JP')}
+                      </span>
+                      {h.registered && <Badge type="registered">登録済み</Badge>}
                     </div>
                     <div style={s.resultTitle}>
                       <a href={h.url} target="_blank" rel="noopener noreferrer" style={{ color: '#1558d6', textDecoration: 'none' }}>{h.title}</a>
@@ -623,6 +678,7 @@ function Badge({ type, children }: { type: string; children: React.ReactNode }) 
     new:         { bg: '#e6f4ea', color: '#1e7e34' },
     duplicate:   { bg: '#f0f0f0', color: '#888' },
     blacklisted: { bg: '#fce8e8', color: '#c00' },
+    registered:  { bg: '#1558d6', color: '#fff' },
   };
   const c = colors[type] ?? colors.duplicate;
   return (

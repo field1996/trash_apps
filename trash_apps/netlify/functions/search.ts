@@ -14,7 +14,7 @@ const LAST_RESULT_PATH = "data/last_result.json";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
 };
 
 type DateRestrict = "d3" | "w1" | "w2" | "m1";
@@ -202,6 +202,18 @@ export const handler: Handler = async (event: HandlerEvent) => {
       return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
     }
 
+    if (method === "PATCH" && action === "last_result") {
+      const body = JSON.parse(event.body ?? "{}");
+      const { sha } = await readJson<unknown>(LAST_RESULT_PATH);
+      await ghPut(
+        LAST_RESULT_PATH,
+        JSON.stringify(body.payload),
+        sha,
+        `data: 登録済みフラグを更新`
+      );
+      return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
+    }
+
     // POST: 1ページ分の検索
     if (method === "POST") {
       const body = JSON.parse(event.body ?? "{}");
@@ -215,7 +227,7 @@ export const handler: Handler = async (event: HandlerEvent) => {
 
       // isLast=true のときはSerperを叩かず履歴保存のみ
       if (isLast) {
-        const finalResults: SearchResult[] = body.finalResults ?? [];
+        const finalResults: (SearchResult & { status?: string })[] = body.finalResults ?? [];
         const { data: historyRaw, sha: historySha } = await readJson<HistoryEntry[]>(HISTORY_PATH);
         const { data: blacklistRaw } = await readJson<string[]>(BLACKLIST_PATH);
         const history = historyRaw as HistoryEntry[];
