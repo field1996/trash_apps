@@ -113,7 +113,25 @@ export default function SearchScraper() {
     fetchBlacklist();
     fetchDomains();
     fetchWhitelist();
-  }, [fetchBlacklist, fetchDomains, fetchWhitelist]);
+    fetchLastResult();
+  }, [fetchBlacklist, fetchDomains, fetchWhitelist, fetchLastResult]);
+
+  const fetchLastResult = useCallback(async () => {
+  // 結果がすでにある場合は上書きしない（検索実行後のリロードは除く）
+    const res = await fetch(`${API}?action=last_result`);
+    const data = await res.json();
+    const payload = data.lastResult;
+    if (!payload || !payload.results) return;
+    setResults(payload.results);
+    setStats({
+      total: payload.results.length,
+      new: payload.results.filter((r: AnnotatedResult) => r.status === 'new').length,
+      duplicate: payload.results.filter((r: AnnotatedResult) => r.status === 'duplicate').length,
+      blacklisted: payload.results.filter((r: AnnotatedResult) => r.status === 'blacklisted').length,
+    });
+    setLastRun(new Date(payload.executedAt));
+    setQuery(payload.query ?? '');
+  }, []);
 
   // ---- 検索実行 ----
   async function handleSearch() {

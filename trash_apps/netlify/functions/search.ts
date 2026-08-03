@@ -9,6 +9,7 @@ const HISTORY_PATH   = "data/search_history.json";
 const BLACKLIST_PATH = "data/blacklist.json";
 const DOMAINS_PATH   = "data/domains.json";
 const WHITELIST_PATH = "data/whitelist.json"; // タイトルフィルタ除外ホワイトリスト
+const LAST_RESULT_PATH = "data/last_result.json";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -102,6 +103,10 @@ export const handler: Handler = async (event: HandlerEvent) => {
       if (action === "whitelist") {
         const { data } = await readJson<string[]>(WHITELIST_PATH);
         return { statusCode: 200, headers: CORS, body: JSON.stringify({ whitelist: data }) };
+      }
+      if (action === "last_result") {
+        const { data } = await readJson<unknown>(LAST_RESULT_PATH);
+        return { statusCode: 200, headers: CORS, body: JSON.stringify({ lastResult: data }) };
       }
       if (action === "history") {
         const { data } = await readJson<HistoryEntry[]>(HISTORY_PATH);
@@ -227,6 +232,20 @@ export const handler: Handler = async (event: HandlerEvent) => {
             `data: 検索履歴を追加 - "${query}" (${newItems.length}件)`
           );
         }
+        // 直前結果を保存（finalResultsをそのまま格納）
+        const { sha: lastResultSha } = await readJson<unknown>(LAST_RESULT_PATH);
+        const lastResultPayload = {
+          query,
+          executedAt: new Date().toISOString(),
+          results: finalResults,
+        };
+        await ghPut(
+          LAST_RESULT_PATH,
+          JSON.stringify(lastResultPayload),
+          lastResultSha,
+          `data: 直前検索結果を保存 - "${query}"`
+        );
+
         return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true, saved: newItems.length }) };
       }
 
