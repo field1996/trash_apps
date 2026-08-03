@@ -109,13 +109,6 @@ export default function SearchScraper() {
     setWhitelist((await res.json()).whitelist ?? []);
   }, []);
 
-  useEffect(() => {
-    fetchBlacklist();
-    fetchDomains();
-    fetchWhitelist();
-    fetchLastResult();
-  }, [fetchBlacklist, fetchDomains, fetchWhitelist, fetchLastResult]);
-
   const fetchLastResult = useCallback(async () => {
   // 結果がすでにある場合は上書きしない（検索実行後のリロードは除く）
     const res = await fetch(`${API}?action=last_result`);
@@ -132,6 +125,13 @@ export default function SearchScraper() {
     setLastRun(new Date(payload.executedAt));
     setQuery(payload.query ?? '');
   }, []);
+
+  useEffect(() => {
+    fetchBlacklist();
+    fetchDomains();
+    fetchWhitelist();
+    fetchLastResult();
+  }, [fetchBlacklist, fetchDomains, fetchWhitelist, fetchLastResult ]);
 
   // ---- 検索実行 ----
   async function handleSearch() {
