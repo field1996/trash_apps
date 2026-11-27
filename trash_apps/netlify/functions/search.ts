@@ -83,6 +83,43 @@ function isBlacklisted(url: string, blacklist: string[]): boolean {
 
 // ---- Handler ----
 
+/**
+ * Google の goto?url=... 形式リンクを、実際の遷移先URLに解決する。
+ * 失敗・タイムアウト時は元のリンクをそのまま返す。
+ */
+async function resolveGoto(link: string): Promise<string> {
+  if (!link || !link.startsWith("https://www.google.com/goto")) return link;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(link, {
+      redirect: "manual",
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept-Language": "ja,en;q=0.8",
+      },
+    });
+    const loc = res.headers.get("location");
+    if (loc) {
+      const abs = new URL(loc, link).toString();
+      if (!abs.startsWith("https://www.google.com/goto")) return abs;
+    }
+    // 3xx でない場合: HTML内の meta refresh / リンクから遷移先を探す
+    const html = (await res.text()).slice(0, 20000);
+    const m =
+      html.match(/http-equiv=["']refresh["'][^>]*url=([^"'>\s]+)/i) ||
+      html.match(/<a[^>]+href=["'](https?:\/\/(?!www\.google\.com)[^"']+)["']/i);
+    if (m) return m[1].replace(/&amp;/g, "&");
+    console.log("[goto-resolve] unresolved status=" + res.status);
+  } catch (e) {
+    console.log("[goto-resolve] error:", (e as Error).message);
+  } finally {
+    clearTimeout(timer);
+  }
+  return link;
+}
+
 export const handler: Handler = async (event: HandlerEvent) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
 
@@ -273,19 +310,20 @@ export const handler: Handler = async (event: HandlerEvent) => {
       const serperData = await serperRes.json();
       const rawItems: { link: string; title: string; snippet: string }[] = serperData.organic ?? [];
 
-      // 調査用: google.com/goto 形式のリンクについて、Serper生レスポンスの全フィールドを出力
-      for (const item of rawItems) {
-        if (item.link?.startsWith("https://www.google.com/goto")) {
-          console.log("[goto-debug] raw item:", JSON.stringify(item));
-        }
-      }
 
-      const rawResults: SearchResult[] = rawItems.map((item) => ({
-        url: item.link,
+      const resolvedLinks = await Promise.all(rawItems.map((item) => resolveGoto(item.link)));
+      const rawResults: SearchResult[] = rawItems.map((item, i) => ({
+        url: resolvedLinks[i],
         title: item.title,
         description: item.snippet?.replace(/\n/g, " ") ?? "",
         fetchedAt: new Date().toISOString(),
       }));
+      const resolvedCount = rawItems.filter((it, i) => it.link !== resolvedLinks[i]).length;
+      if (rawItems.some((it) => it.link?.startsWith("https://www.google.com/goto"))) {
+        console.log("[goto-resolve] resolved " + resolvedCount + "/" +
+          rawItems.filter((it) => it.link?.startsWith("https://www.google.com/goto")).length +
+          " e.g. " + resolvedLinks.find((l) => !l.startsWith("https://www.google.com/goto")));
+      }
 
       const [{ data: historyRaw }, { data: blacklistRaw }] = await Promise.all([
         readJson<HistoryEntry[]>(HISTORY_PATH),
