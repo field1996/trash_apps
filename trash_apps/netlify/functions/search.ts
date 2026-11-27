@@ -273,6 +273,13 @@ export const handler: Handler = async (event: HandlerEvent) => {
       const serperData = await serperRes.json();
       const rawItems: { link: string; title: string; snippet: string }[] = serperData.organic ?? [];
 
+      // 調査用: google.com/goto 形式のリンクについて、Serper生レスポンスの全フィールドを出力
+      for (const item of rawItems) {
+        if (item.link?.startsWith("https://www.google.com/goto")) {
+          console.log("[goto-debug] raw item:", JSON.stringify(item));
+        }
+      }
+
       const rawResults: SearchResult[] = rawItems.map((item) => ({
         url: item.link,
         title: item.title,
